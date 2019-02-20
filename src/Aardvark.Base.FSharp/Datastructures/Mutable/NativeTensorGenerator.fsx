@@ -268,6 +268,48 @@ module Generator =
                 int dim
                 float dim
             ]
+    let iter (coord : CoordDescription) (components : string[]) =
+        let suffix = components |> String.concat ""
+
+        start "member inline private x.Iter%s(action : %s -> 'a -> unit) = " suffix coord.typ
+        line "let action = OptimizedClosures.FSharpFunc<'a, %s, unit>.Adapt(action)" coord.typ
+        line "let sa = nativeint (sizeof<'a>)"
+        line "let mutable ptr = ptr |> NativePtr.toNativeInt"
+        line "ptr <- ptr + nativeint info.Origin * sa"
+
+        for d in 0 .. components.Length-2 do
+            let mine = components.[d]
+            let next = components.[d + 1]
+            line "let s%s = nativeint (info.S%s * info.D%s) * sa" mine mine mine
+            line "let j%s = nativeint (info.D%s - info.S%s * info.D%s) * sa" mine mine next next
+
+
+        let mine = components.[components.Length-1]
+        line "let s%s = nativeint (info.S%s * info.D%s) * sa" mine mine mine
+        line "let j%s = nativeint (info.D%s) * sa" mine mine
+        
+        line "let initialCoord = %s" (coord.init "x.Size")
+        line "let step = %s" (coord.step "x.Size")
+
+        line "let mutable coord = initialCoord"
+
+        let rec buildLoop (index : int) =
+            if index >= components.Length then
+                //line "let c = %s" (coord.view "coord" "x.Size")
+                line "action.Invoke(NativePtr.read (NativePtr.ofNativeInt<'a> ptr), coord)"
+                //line "NativePtr.write (NativePtr.ofNativeInt<'a> ptr) (getValue coord)"
+            else
+                let mine = components.[index]
+                line "let e%s = ptr + s%s" mine mine
+                if index <> 0 then line "%s" (coord.set "coord" mine (coord.get "initialCoord" mine))
+                start "while ptr <> e%s do" mine 
+                buildLoop (index + 1)
+                line "%s" (coord.set "coord" mine (sprintf "%s + %s" (coord.get "coord" mine) (coord.get "step" mine)))
+                line "ptr <- ptr + j%s" mine
+                stop()
+
+        buildLoop 0
+        stop()
 
     let coordSetter (coord : CoordDescription) (components : string[]) =
         let suffix = components |> String.concat ""
@@ -968,6 +1010,11 @@ module Generator =
         for coord in CoordDescription.all dim do
             for perm in allPermutations componentNames do coordSetter coord (List.toArray perm)
             dispatcher id componentNames "SetByCoord" ["value", sprintf "%s -> 'a" coord.typ]
+
+        // Iter (value)
+        for coord in CoordDescription.all dim do
+            for perm in allPermutations componentNames do iter coord (List.toArray perm)
+            dispatcher id componentNames "Iter" ["action", sprintf "%s -> 'a -> unit" coord.typ]
 
         // BlitTo(other, lerp) 
         for perm in allPermutations componentNames do 
